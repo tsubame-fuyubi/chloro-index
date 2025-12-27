@@ -24,3 +24,18 @@ target
 # Added by cargo
 
 /target
+
+# Database files (runtime generated)
+*.db
+
+# IDE and editor files
+.cursor/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
