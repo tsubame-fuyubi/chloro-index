@@ -171,5 +171,128 @@ impl BTree {
         let tree = serde_json::from_reader(reader)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         Ok(tree)
+    }    
+}
+
+// --- DNA Encoding/Decoding Module ---
+
+/// Maximum DNA sequence length that can be encoded in a u64.
+/// Each base uses 2 bits, so we can store up to 32 bases (64 bits / 2 bits per base).
+pub const MAX_DNA_LENGTH: usize = 32;
+
+/// Bits per base pair in the encoding scheme.
+const BITS_PER_BASE: u32 = 2;
+
+/// Encodes a DNA sequence into a u64 integer.
+/// 
+/// Each base is encoded using 2 bits: A=00, C=01, G=10, T=11.
+/// Bases are packed from left to right (most significant bits first).
+/// 
+/// # Arguments
+/// 
+/// * `dna` - A string containing only A, C, G, T (case-insensitive)
+/// 
+/// # Returns
+/// 
+/// * `Ok(u64)` - The encoded sequence as a u64 integer
+/// * `Err(String)` - An error message if the sequence is invalid or too long
+/// 
+/// # Examples
+/// 
+/// ```
+/// use chloro_index::encode_dna;
+/// 
+/// let encoded = encode_dna("ACGT").unwrap();
+/// assert_eq!(encoded, 0b00011011); // A(00) C(01) G(10) T(11)
+/// ```
+pub fn encode_dna(dna: &str) -> Result<u64, String> {
+    if dna.is_empty() {
+        return Err("Empty DNA sequence".to_string());
+    }
+    
+    if dna.len() > MAX_DNA_LENGTH {
+        return Err(format!(
+            "Sequence too long: {} bases (maximum: {})",
+            dna.len(),
+            MAX_DNA_LENGTH
+        ));
+    }
+    
+    let mut encoded: u64 = 0;
+    
+    for base in dna.chars() {
+        encoded <<= BITS_PER_BASE; // Shift left to make room for the next base
+        encoded |= encode_base(base)? as u64;
+    }
+    
+    Ok(encoded)
+}
+
+/// Decodes a u64 integer back into a DNA sequence.
+/// 
+/// The length parameter is required because leading zeros in the encoded value
+/// cannot be distinguished from encoded 'A' bases (which are also 00).
+/// 
+/// # Arguments
+/// 
+/// * `value` - The encoded u64 integer
+/// * `length` - The original length of the DNA sequence
+/// 
+/// # Returns
+/// 
+/// * `String` - The decoded DNA sequence
+/// 
+/// # Examples
+/// 
+/// ```
+/// use chloro_index::{encode_dna, decode_dna};
+/// 
+/// let encoded = encode_dna("ACGT").unwrap();
+/// let decoded = decode_dna(encoded, 4);
+/// assert_eq!(decoded, "ACGT");
+/// ```
+pub fn decode_dna(mut value: u64, length: usize) -> String {
+    if length == 0 {
+        return String::new();
+    }
+    
+    let mut sequence = String::with_capacity(length);
+    
+    // Extract bases from least significant bits (right to left)
+    for _ in 0..length {
+        let base_bits = (value & 0b11) as u8;
+        sequence.push(decode_base(base_bits));
+        value >>= BITS_PER_BASE;
+    }
+    
+    // Reverse because we decoded from right to left
+    sequence.chars().rev().collect()
+}
+
+/// Encodes a single DNA base to its 2-bit representation.
+/// 
+/// * A/a -> 0b00 (0)
+/// * C/c -> 0b01 (1)
+/// * G/g -> 0b10 (2)
+/// * T/t -> 0b11 (3)
+fn encode_base(base: char) -> Result<u8, String> {
+    match base.to_ascii_uppercase() {
+        'A' => Ok(0b00),
+        'C' => Ok(0b01),
+        'G' => Ok(0b10),
+        'T' => Ok(0b11),
+        _ => Err(format!("Invalid DNA base: '{}' (expected A, C, G, or T)", base)),
     }
 }
+
+/// Decodes a 2-bit value back to its corresponding DNA base character.
+fn decode_base(bits: u8) -> char {
+    match bits & 0b11 {
+        0b00 => 'A',
+        0b01 => 'C',
+        0b10 => 'G',
+        0b11 => 'T',
+        _ => unreachable!("2-bit value cannot exceed 0b11"),
+    }
+}
+
