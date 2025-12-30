@@ -1,24 +1,60 @@
+//! Genomic sequence index using B-Tree data structure.
+//!
+//! This module provides a B-Tree implementation optimized for indexing
+//! genomic k-mers and their locations. DNA sequences are encoded as u64
+//! values (2 bits per base) for efficient storage and lookup.
+
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{self, BufReader};
+use std::io::{self, BufReader, BufWriter};
 use std::mem;
 
-/// Genomic location with chromosome ID and position
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+// ============================================================================
+// Public Types
+// ============================================================================
+
+/// Represents a genomic location with chromosome ID and position.
+///
+/// Positions are 1-based (following biological convention).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct GenomicLocation {
+    /// Chromosome identifier (typically 1-24 for human genome)
     pub chromosome: u8,
+    /// 1-based position on the chromosome
     pub position: u32,
 }
 
+/// B-Tree index for genomic k-mer lookup.
+///
+/// This B-Tree stores encoded DNA sequences (k-mers) as keys and their
+/// genomic locations as values. The tree maintains balance through node
+/// splitting when nodes exceed capacity.
+#[derive(Serialize, Deserialize)]
+pub struct BTree {
+    root: BTreeNode,
+    /// Minimum degree of the B-Tree (t). Each node has at most 2t-1 keys.
+    t: usize,
+}
+
+// ============================================================================
+// Internal Types
+// ============================================================================
+
+/// Internal node structure for the B-Tree.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct BTreeNode {
+    /// Sorted array of encoded DNA sequence keys
     keys: Vec<u64>,
+    /// Corresponding genomic locations for each key
     values: Vec<Vec<GenomicLocation>>,
+    /// Child nodes (only used for non-leaf nodes)
     children: Vec<BTreeNode>,
+    /// Whether this node is a leaf (has no children)
     is_leaf: bool,
 }
 
 impl BTreeNode {
+    /// Creates a new B-Tree node.
     fn new(is_leaf: bool) -> Self {
         BTreeNode {
             keys: Vec::new(),
@@ -29,13 +65,16 @@ impl BTreeNode {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct BTree {
-    root: BTreeNode,
-    t: usize,
-}
-
 impl BTree {
+    // ========================================================================
+    // Public API
+    // ========================================================================
+
+    /// Creates a new B-Tree with the specified minimum degree.
+    ///
+    /// # Arguments
+    /// * `t` - Minimum degree. Each node can have at most 2t-1 keys.
+    ///          Must be at least 2 for a valid B-Tree.
     pub fn new(t: usize) -> Self {
         BTree {
             root: BTreeNode::new(true),
@@ -43,10 +82,118 @@ impl BTree {
         }
     }
 
+    /// Searches for a key in the B-Tree.
+    ///
+    /// # Arguments
+    /// * `key` - Encoded DNA sequence to search for
+    ///
+    /// # Returns
+    /// * `Some(Vec<GenomicLocation>)` - All genomic locations where this k-mer appears
+    /// * `None` - Key not found
     pub fn search(&self, key: u64) -> Option<Vec<GenomicLocation>> {
         self.search_node(&self.root, key)
     }
 
+    /// Inserts a key-value pair into the B-Tree.
+    ///
+    /// If the key already exists, the new locations are appended to the
+    /// existing list of locations.
+    ///
+    /// # Arguments
+    /// * `key` - Encoded DNA sequence
+    /// * `locations` - Genomic locations where this k-mer appears
+    pub fn insert(&mut self, key: u64, locations: Vec<GenomicLocation>) {
+        if self.root.keys.len() == 2 * self.t - 1 {
+            let mut new_root = BTreeNode::new(false);
+            let old_root = mem::replace(&mut self.root, BTreeNode::new(true));
+            new_root.children.push(old_root);
+            
+            Self::split_child(&mut new_root, 0, self.t);
+            self.root = new_root;
+        }
+        
+        Self::insert_non_full(&mut self.root, key, locations, self.t);
+    }
+
+    /// Indexes a DNA sequence by extracting all k-mers using a sliding window.
+    ///
+    /// This method processes the entire sequence, extracts all k-mers of
+    /// length `K_MER_SIZE`, encodes them, and inserts them into the index
+    /// with their genomic positions.
+    ///
+    /// # Arguments
+    /// * `chr` - Chromosome identifier
+    /// * `seq` - DNA sequence string (must contain only A, C, G, T)
+    ///
+    /// # Returns
+    /// Number of k-mers successfully indexed
+    pub fn bulk_insert_sequence(&mut self, chr: u8, seq: &str) -> usize {
+        const K_MER_SIZE: usize = 32;
+        
+        if seq.len() < K_MER_SIZE {
+            return 0;
+        }
+
+        let mut count = 0;
+        for (i, window_bytes) in seq.as_bytes().windows(K_MER_SIZE).enumerate() {
+            if let Ok(fragment) = std::str::from_utf8(window_bytes) {
+                if let Ok(key) = encode_dna(fragment) {
+                    let loc = GenomicLocation {
+                        chromosome: chr,
+                        position: (i + 1) as u32, // 1-based position
+                    };
+                    self.insert(key, vec![loc]);
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    /// Saves the B-Tree to a file using binary serialization.
+    ///
+    /// # Arguments
+    /// * `filename` - Path to the output file
+    ///
+    /// # Errors
+    /// Returns `io::Error` if file creation or serialization fails.
+    pub fn save_to_file(&self, filename: &str) -> io::Result<()> {
+        let file = File::create(filename)?;
+        let writer = BufWriter::new(file);
+        
+        bincode::serialize_into(writer, self)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            
+        Ok(())
+    }
+
+    /// Loads a B-Tree from a file.
+    ///
+    /// # Arguments
+    /// * `filename` - Path to the input file
+    ///
+    /// # Errors
+    /// Returns `io::Error` if file opening or deserialization fails.
+    pub fn load_from_file(filename: &str) -> io::Result<Self> {
+        let file = File::open(filename)?;
+        let reader = BufReader::new(file);
+
+        let tree: BTree = bincode::deserialize_from(reader)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        Ok(tree)
+    }
+
+    /// Prints the tree structure for debugging purposes.
+    pub fn print_tree(&self) {
+        self.print_node(&self.root, 0);
+    }
+
+    // ========================================================================
+    // Internal Implementation
+    // ========================================================================
+
+    /// Recursively searches for a key starting from the given node.
     fn search_node(&self, node: &BTreeNode, key: u64) -> Option<Vec<GenomicLocation>> {
         let mut i = 0;
         while i < node.keys.len() && key > node.keys[i] {
@@ -64,19 +211,10 @@ impl BTree {
         self.search_node(&node.children[i], key)
     }
 
-    pub fn insert(&mut self, key: u64, locations: Vec<GenomicLocation>) {
-        if self.root.keys.len() == 2 * self.t - 1 {
-            let mut new_root = BTreeNode::new(false);
-            let old_root = mem::replace(&mut self.root, BTreeNode::new(true));
-            new_root.children.push(old_root);
-            
-            Self::split_child(&mut new_root, 0, self.t);
-            self.root = new_root;
-        }
-        
-        Self::insert_non_full(&mut self.root, key, locations, self.t);
-    }
-
+    /// Inserts a key into a non-full node.
+    ///
+    /// This is the core insertion logic that handles both leaf and internal nodes.
+    /// For existing keys, locations are merged rather than replaced.
     fn insert_non_full(node: &mut BTreeNode, key: u64, locations: Vec<GenomicLocation>, t: usize) {
         let mut i = 0;
         while i < node.keys.len() && key > node.keys[i] {
@@ -85,19 +223,25 @@ impl BTree {
 
         if node.is_leaf {
             if i < node.keys.len() && key == node.keys[i] {
+                // Key exists: merge locations
                 node.values[i].extend(locations);
             } else {
+                // Key doesn't exist: insert new entry
                 node.keys.insert(i, key);
                 node.values.insert(i, locations);
             }
         } else {
+            // Internal node
             if i < node.keys.len() && key == node.keys[i] {
+                // Key exists at this level: merge locations
                 node.values[i].extend(locations);
                 return;
             }
 
+            // Check if child needs splitting before recursion
             if node.children[i].keys.len() == 2 * t - 1 {
                 Self::split_child(node, i, t);
+                // After split, adjust index if necessary
                 if key > node.keys[i] {
                     i += 1;
                 } else if key == node.keys[i] {
@@ -110,17 +254,23 @@ impl BTree {
         }
     }
 
+    /// Splits a full child node, promoting the middle key to the parent.
+    ///
+    /// This maintains the B-Tree property that nodes have between t-1 and 2t-1 keys.
     fn split_child(parent: &mut BTreeNode, i: usize, t: usize) {
         let full_child = &mut parent.children[i];
         let mut new_child = BTreeNode::new(full_child.is_leaf);
         
+        // Move upper half of keys and values to new child
         new_child.keys.extend(full_child.keys.drain(t..));
         new_child.values.extend(full_child.values.drain(t..));
         
+        // Move upper half of children if not a leaf
         if !full_child.is_leaf {
             new_child.children.extend(full_child.children.drain(t..));
         }
 
+        // Promote middle key to parent
         let mid_key = full_child.keys.pop().unwrap();
         let mid_value = full_child.values.pop().unwrap();
 
@@ -129,10 +279,7 @@ impl BTree {
         parent.children.insert(i + 1, new_child);
     }
 
-    pub fn print_tree(&self) {
-        self.print_node(&self.root, 0);
-    }
-
+    /// Recursively prints node contents for debugging.
     fn print_node(&self, node: &BTreeNode, level: usize) {
         let indent = "  ".repeat(level);
         let pairs: Vec<String> = node.keys.iter()
@@ -153,26 +300,37 @@ impl BTree {
             }
         }
     }
-    pub fn save_to_file(&self, filename: &str) -> io::Result<()> {
-        let file = File::create(filename)?;
-        serde_json::to_writer_pretty(file, self)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        Ok(())
-    }
-
-    pub fn load_from_file(filename: &str) -> io::Result<Self> {
-        let file = File::open(filename)?;
-        let reader = BufReader::new(file);
-        let tree = serde_json::from_reader(reader)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        Ok(tree)
-    }    
 }
 
+// ============================================================================
+// DNA Encoding/Decoding
+// ============================================================================
+
+/// Maximum length of DNA sequence that can be encoded into a u64.
+///
+/// With 2 bits per base, a u64 can store up to 32 bases.
 pub const MAX_DNA_LENGTH: usize = 32;
+
 const BITS_PER_BASE: u32 = 2;
 
-/// Encodes a DNA sequence into a u64 (2 bits per base: A=00, C=01, G=10, T=11)
+/// Encodes a DNA sequence into a u64 integer.
+///
+/// Each base is encoded using 2 bits: A=00, C=01, G=10, T=11.
+/// The sequence is packed from left to right, with the first base
+/// occupying the most significant bits.
+///
+/// # Arguments
+/// * `dna` - DNA sequence string (case-insensitive)
+///
+/// # Returns
+/// * `Ok(u64)` - Encoded sequence
+/// * `Err(String)` - Error message if sequence is invalid or too long
+///
+/// # Examples
+/// ```
+/// use chloro_index::encode_dna;
+/// assert_eq!(encode_dna("ACGT").unwrap(), 0b00011011);
+/// ```
 pub fn encode_dna(dna: &str) -> Result<u64, String> {
     if dna.is_empty() {
         return Err("Empty DNA sequence".to_string());
@@ -195,7 +353,17 @@ pub fn encode_dna(dna: &str) -> Result<u64, String> {
     Ok(encoded)
 }
 
-/// Decodes a u64 back into a DNA sequence (length required to distinguish leading zeros from 'A' bases)
+/// Decodes a u64 back into a DNA sequence string.
+///
+/// The length parameter is required because leading zeros in the
+/// encoded value are indistinguishable from 'A' bases.
+///
+/// # Arguments
+/// * `value` - Encoded DNA sequence
+/// * `length` - Original sequence length
+///
+/// # Returns
+/// Decoded DNA sequence string
 pub fn decode_dna(mut value: u64, length: usize) -> String {
     if length == 0 {
         return String::new();
@@ -210,6 +378,14 @@ pub fn decode_dna(mut value: u64, length: usize) -> String {
     sequence.chars().rev().collect()
 }
 
+/// Encodes a single DNA base character to its 2-bit representation.
+///
+/// # Arguments
+/// * `base` - DNA base character (A, C, G, or T, case-insensitive)
+///
+/// # Returns
+/// * `Ok(u8)` - 2-bit encoding (0-3)
+/// * `Err(String)` - Error if character is not a valid DNA base
 fn encode_base(base: char) -> Result<u8, String> {
     match base.to_ascii_uppercase() {
         'A' => Ok(0b00),
@@ -220,6 +396,13 @@ fn encode_base(base: char) -> Result<u8, String> {
     }
 }
 
+/// Decodes a 2-bit value back to its DNA base character.
+///
+/// # Arguments
+/// * `bits` - 2-bit encoding (only lower 2 bits are used)
+///
+/// # Returns
+/// DNA base character (A, C, G, or T)
 fn decode_base(bits: u8) -> char {
     match bits & 0b11 {
         0b00 => 'A',
