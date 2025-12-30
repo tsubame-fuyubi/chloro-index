@@ -1,5 +1,6 @@
 use std::io::{self, Write};
-use chloro_index::BTree; 
+use chloro_index::{BTree, GenomicLocation};
+use chloro_index::encode_dna; 
 
 fn main() {
     let filename = "chloro.db";
@@ -38,26 +39,67 @@ fn main() {
         }
 
         match parts[0] {
-            "insert" => {
-                if parts.len() < 2 {
-                    eprintln!("Error: Missing arguments. Usage: insert <key> [value]");
+            "dna_add" => {
+                if parts.len() < 4 {
+                    eprintln!("Error: Missing arguments. Usage: dna_add <ACGT> <chr> <pos>");
                     continue;
                 }
 
-                if let Ok(key) = parts[1].parse::<u64>() {
-                    // Get value, generate default if not provided
-                    let value = if parts.len() > 2 {
-                        parts[2].to_string()
-                    } else {
-                        format!("val_{}", key)
-                    };
-
-                    println!("Inserted: {} -> {}", key, value);
-                    tree.insert(key, value);
-                } else {
-                    eprintln!("Error: Key must be a valid number.");
+                let seq = parts[1];
+                match encode_dna(seq) {
+                    Ok(key) => {
+                        if let (Ok(chr), Ok(pos)) = (parts[2].parse::<u8>(), parts[3].parse::<u32>()) {
+                            let location = GenomicLocation { chromosome: chr, position: pos };
+                            println!("Encoded sequence: '{}' -> Key: {}", seq, key);
+                            tree.insert(key, vec![location.clone()]);
+                            println!("Inserted: {} -> chr{}:{}", key, location.chromosome, location.position);
+                        } else {
+                            eprintln!("Error: Invalid chromosome or position. Usage: dna_add <ACGT> <chr> <pos>");
+                        }
+                    }
+                    Err(e) => eprintln!("Error: Invalid DNA sequence: {}", e),
                 }
             }
+
+            "dna_find" => {
+                if parts.len() < 2 {
+                    eprintln!("Error: Missing sequence. Usage: dna_find <ACGT>");
+                    continue;
+                }
+
+                let seq = parts[1];
+                match encode_dna(seq) {
+                    Ok(key) => {
+                        println!("Searching for sequence: '{}' (Key: {})", seq, key);
+                        match tree.search(key) {
+                            Some(locations) => {
+                                let loc_strs: Vec<String> = locations.iter()
+                                    .map(|loc| format!("chr{}:{}", loc.chromosome, loc.position))
+                                    .collect();
+                                println!("Found: {} => [{}]", key, loc_strs.join(", "));
+                            }
+                            None => println!("Not found: Key {}", key),
+                        }
+                    }
+                    Err(e) => eprintln!("Error: Invalid DNA sequence: {}", e),
+                }
+            }
+
+            "insert" => {
+                if parts.len() < 4 {
+                    eprintln!("Error: Missing arguments. Usage: insert <key> <chr> <pos>");
+                    continue;
+                }
+
+                if let (Ok(key), Ok(chr), Ok(pos)) = (parts[1].parse::<u64>(), parts[2].parse::<u8>(), parts[3].parse::<u32>()) {
+                    let location = GenomicLocation { chromosome: chr, position: pos };
+                    tree.insert(key, vec![location.clone()]);
+                    println!("Inserted: {} -> chr{}:{}", key, location.chromosome, location.position);
+                } else {
+                    eprintln!("Error: Invalid arguments. Usage: insert <key> <chr> <pos>");
+                }
+            }
+
             "search" => {
                 if parts.len() < 2 {
                     eprintln!("Error: Missing key. Usage: search <key>");
@@ -66,37 +108,44 @@ fn main() {
 
                 if let Ok(key) = parts[1].parse::<u64>() {
                     match tree.search(key) {
-                        Some(val) => {
-                            println!("Found: {} => {}", key, val);
-                        },
-                        None => {
-                            println!("Not found: Key {}", key);
+                        Some(locations) => {
+                            let loc_strs: Vec<String> = locations.iter()
+                                .map(|loc| format!("chr{}:{}", loc.chromosome, loc.position))
+                                .collect();
+                            println!("Found: {} => [{}]", key, loc_strs.join(", "));
                         }
+                        None => println!("Not found: Key {}", key),
                     }
                 } else {
                     eprintln!("Error: Key must be a valid number.");
                 }
             }
+
             "show" => {
                 tree.print_tree();
             }
+
             "help" => {
-                println!("Commands:");
-                println!("  insert <key> [value]  - Insert a key-value pair");
-                println!("  search <key>          - Search for a key");
-                println!("  show                  - Display the tree structure");
-                println!("  exit                  - Save and exit");
+                println!("Available commands:");
+                println!("  dna_add <seq> <chr> <pos>  - Insert DNA sequence with location");
+                println!("  dna_find <seq>             - Search for DNA sequence");
+                println!("  insert <key> <chr> <pos>   - Insert key with location");
+                println!("  search <key>               - Search by key");
+                println!("  show                       - Display B-Tree structure");
+                println!("  exit                       - Save database and exit");
             }
+
             "exit" => {
                 print!("Saving database...");
                 match tree.save_to_file(filename) {
-                    Ok(_) => println!(" Done."),
-                    Err(e) => eprintln!(" Error saving file: {}", e),
+                    Ok(_) => println!(" OK."),
+                    Err(e) => eprintln!(" Failed: {}", e),
                 }
                 break;
             }
+
             _ => {
-                eprintln!("Unknown command: '{}'. Type 'help' for list.", parts[0]);
+                eprintln!("Unknown command: '{}'. Type 'help' for a list of commands.", parts[0]);
             }
         }
     }
