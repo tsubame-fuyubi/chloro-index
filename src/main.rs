@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::time::Instant;
 
-use chloro_index::{BTree, encode_dna};
+use chloro_index::{BTree, encode_dna, MAX_DNA_LENGTH};
 
 const DEFAULT_DB_FILE: &str = "chloro.db";
 const MAX_DISPLAY_RESULTS: usize = 5;
@@ -28,7 +28,8 @@ fn main() {
     };
 
     println!("=== ChloroDB: Genomic K-mer Index ===");
-    println!("Commands: import <file>, find <seq>, exit");
+    println!("Commands: import <file>, find <seq>, fuzz <seq>, exit");
+    println!("Use 'fuzz <dna_sequence>' for fuzzy search (allows 1 mismatch)");
 
     // Main command loop
     loop {
@@ -48,6 +49,7 @@ fn main() {
         match parts[0] {
             "import" => handle_import(&mut tree, &parts),
             "find" => handle_find(&tree, &parts),
+            "fuzz" => handle_fuzz(&tree, &parts),
             "exit" => {
                 if let Err(e) = tree.save_to_file(filename) {
                     eprintln!("Error saving database: {}", e);
@@ -56,7 +58,7 @@ fn main() {
                 }
                 break;
             }
-            _ => println!("Unknown command. Available: import, find, exit"),
+            _ => println!("Unknown command. Available: import, find, fuzz, exit"),
         }
     }
 }
@@ -167,7 +169,13 @@ fn parse_chromosome_id(header: &str) -> Option<u8> {
     id_str.parse::<u8>().ok()
 }
 
-/// Handles the find command for sequence lookup.
+/// Handles the find command for exact sequence lookup.
+///
+/// This function searches for an exact match of the DNA sequence in the index.
+///
+/// # Arguments
+/// * `tree` - B-Tree index to search
+/// * `parts` - Command arguments (parts[1] should contain the DNA sequence)
 fn handle_find(tree: &BTree, parts: &[&str]) {
     if parts.len() < 2 {
         eprintln!("Usage: find <dna_sequence>");
@@ -205,5 +213,59 @@ fn handle_find(tree: &BTree, parts: &[&str]) {
             break;
         }
         println!("  - chr{}:{}", loc.chromosome, loc.position);
+    }
+}
+
+/// Handles the fuzz command for fuzzy sequence search (1-mismatch).
+///
+/// This function performs a fuzzy search that finds exact matches and all
+/// possible 1-mismatch variants of the query sequence.
+///
+/// # Arguments
+/// * `tree` - B-Tree index to search
+/// * `parts` - Command arguments (parts[1] should contain the DNA sequence)
+fn handle_fuzz(tree: &BTree, parts: &[&str]) {
+    if parts.len() < 2 {
+        eprintln!("Usage: fuzz <dna_sequence>");
+        return;
+    }
+
+    let dna = parts[1];
+    
+    // Early return on encoding error (includes length and character validation)
+    if let Err(e) = encode_dna(dna) {
+        eprintln!("Invalid DNA sequence: {}", e);
+        return;
+    }
+    
+    println!("Running fuzzy search...");
+    let start = Instant::now();
+    
+    let results = tree.search_fuzzy(dna);
+    let elapsed = start.elapsed();
+    
+    println!("Search completed in {:.2?}", elapsed);
+    
+    if results.is_empty() {
+        println!("No similar sequences found.");
+        return;
+    }
+    
+    // Display results
+    println!("Found {} matching variant(s):", results.len());
+    for (variant, locations) in &results {
+        println!("  Variant: {} ({} location(s))", variant, locations.len());
+        
+        // Print first few locations for each variant
+        for (i, loc) in locations.iter().enumerate() {
+            if i >= MAX_DISPLAY_RESULTS {
+                println!(
+                    "    ... ({} more)",
+                    locations.len() - MAX_DISPLAY_RESULTS
+                );
+                break;
+            }
+            println!("    - chr{}:{}", loc.chromosome, loc.position);
+        }
     }
 }

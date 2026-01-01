@@ -150,6 +150,60 @@ impl BTree {
         count
     }
 
+    /// Performs fuzzy search for a DNA query, finding exact matches and all 1-mismatch variants.
+    ///
+    /// This method first searches for an exact match of the query. Then it generates
+    /// all possible 1-mismatch variants by substituting each position with A, C, G, or T
+    /// (excluding the original character) and searches for each variant.
+    ///
+    /// # Arguments
+    /// * `query` - DNA sequence string to search for (must contain only A, C, G, T)
+    ///
+    /// # Returns
+    /// Vector of tuples `(sequence, locations)` where:
+    /// * `sequence` - The matched DNA sequence (exact match or 1-mismatch variant)
+    /// * `locations` - All genomic locations where this sequence appears
+    ///
+    /// The results may include duplicates if the same variant appears multiple times
+    /// in the search process. Invalid sequences are silently skipped.
+    pub fn search_fuzzy(&self, query: &str) -> Vec<(String, Vec<GenomicLocation>)> {
+        let mut results = Vec::new();
+        
+        // First, search for exact match
+        if let Ok(key) = encode_dna(query) {
+            if let Some(locations) = self.search(key) {
+                results.push((query.to_string(), locations));
+            }
+        }
+        
+        // Generate all 1-mismatch variants
+        let query_chars: Vec<char> = query.chars().collect();
+        let bases = ['A', 'C', 'G', 'T'];
+        
+        for i in 0..query_chars.len() {
+            let original_char = query_chars[i].to_ascii_uppercase();
+            
+            // Try each base except the original
+            for &base in &bases {
+                if base != original_char {
+                    // Create mutated query
+                    let mut mutated_chars = query_chars.clone();
+                    mutated_chars[i] = base;
+                    let mutated_query: String = mutated_chars.iter().collect();
+                    
+                    // Encode and search
+                    if let Ok(key) = encode_dna(&mutated_query) {
+                        if let Some(locations) = self.search(key) {
+                            results.push((mutated_query, locations));
+                        }
+                    }
+                }
+            }
+        }
+        
+        results
+    }
+
     /// Saves the B-Tree to a file using binary serialization.
     ///
     /// # Arguments
