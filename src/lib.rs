@@ -467,3 +467,27 @@ fn decode_base(bits: u8) -> char {
     }
 }
 
+/// Computes the reverse complement of a DNA sequence.
+///
+/// This function reverses the input string and maps each character to its
+/// complement: A->T, T->A, C->G, G->C, N->N.
+///
+/// # Arguments
+/// * `dna` - DNA sequence string
+///
+/// # Returns
+/// The reverse complement of the input sequence
+pub fn reverse_complement(dna: &str) -> String {
+    dna.chars()
+        .rev()
+        .map(|c| match c.to_ascii_uppercase() {
+            'A' => 'T',
+            'T' => 'A',
+            'C' => 'G',
+            'G' => 'C',
+            'N' => 'N',
+            _ => c, // Keep other characters as-is
+        })
+        .collect()
+}
+

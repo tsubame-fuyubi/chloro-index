@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::time::Instant;
 
-use chloro_index::{BTree, encode_dna, MAX_DNA_LENGTH};
+use chloro_index::{BTree, encode_dna, reverse_complement};
 
 const DEFAULT_DB_FILE: &str = "chloro.db";
 const MAX_DISPLAY_RESULTS: usize = 5;
@@ -28,7 +28,7 @@ fn main() {
     };
 
     println!("=== ChloroDB: Genomic K-mer Index ===");
-    println!("Commands: import <file>, find <seq>, fuzz <seq>, exit");
+    println!("Commands: import <file>, find <seq>, fuzz <seq>, revcomp <DNA>, exit");
     println!("Use 'fuzz <dna_sequence>' for fuzzy search (allows 1 mismatch)");
 
     // Main command loop
@@ -50,6 +50,7 @@ fn main() {
             "import" => handle_import(&mut tree, &parts),
             "find" => handle_find(&tree, &parts),
             "fuzz" => handle_fuzz(&tree, &parts),
+            "revcomp" => handle_revcomp(&parts),
             "exit" => {
                 if let Err(e) = tree.save_to_file(filename) {
                     eprintln!("Error saving database: {}", e);
@@ -58,7 +59,7 @@ fn main() {
                 }
                 break;
             }
-            _ => println!("Unknown command. Available: import, find, fuzz, exit"),
+            _ => println!("Unknown command. Available: import, find, fuzz, revcomp, exit"),
         }
     }
 }
@@ -268,4 +269,23 @@ fn handle_fuzz(tree: &BTree, parts: &[&str]) {
             println!("    - chr{}:{}", loc.chromosome, loc.position);
         }
     }
+}
+
+/// Handles the revcomp command for computing reverse complement.
+///
+/// This function computes and displays the reverse complement of a DNA sequence.
+///
+/// # Arguments
+/// * `parts` - Command arguments (parts[1] should contain the DNA sequence)
+fn handle_revcomp(parts: &[&str]) {
+    if parts.len() < 2 {
+        eprintln!("Usage: revcomp <DNA>");
+        return;
+    }
+
+    let dna = parts[1];
+    let revcomp = reverse_complement(dna);
+    
+    println!("Original: {}", dna);
+    println!("Reverse Complement: {}", revcomp);
 }
