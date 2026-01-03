@@ -472,12 +472,27 @@ fn decode_base(bits: u8) -> char {
 /// This function reverses the input string and maps each character to its
 /// complement: A->T, T->A, C->G, G->C, N->N.
 ///
+/// Uses SIMD optimizations when available for better performance on long sequences.
+///
 /// # Arguments
 /// * `dna` - DNA sequence string
 ///
 /// # Returns
 /// The reverse complement of the input sequence
 pub fn reverse_complement(dna: &str) -> String {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("ssse3") && dna.len() >= 16 {
+            return unsafe { reverse_complement_simd(dna) };
+        }
+    }
+    
+    // Fallback to scalar implementation
+    reverse_complement_scalar(dna)
+}
+
+/// Scalar implementation of reverse complement (fallback).
+fn reverse_complement_scalar(dna: &str) -> String {
     dna.chars()
         .rev()
         .map(|c| match c.to_ascii_uppercase() {
@@ -489,5 +504,90 @@ pub fn reverse_complement(dna: &str) -> String {
             _ => c, // Keep other characters as-is
         })
         .collect()
+}
+
+/// SIMD-optimized reverse complement using SSSE3 shuffle instructions.
+///
+/// This implementation uses SIMD to:
+/// 1. Process 16 bytes at a time using SSSE3
+/// 2. Use pshufb (_mm_shuffle_epi8) to reverse byte order within each chunk
+/// 3. Use lookup table for complement mapping
+///
+/// # Safety
+/// This function is unsafe because it uses SIMD intrinsics.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "ssse3")]
+unsafe fn reverse_complement_simd(dna: &str) -> String {
+    use std::arch::x86_64::*;
+    
+    let bytes = dna.as_bytes();
+    let len = bytes.len();
+    let mut result = Vec::with_capacity(len);
+    
+    // Complement lookup table: maps ASCII to complement
+    // A(65) -> T(84), T(84) -> A(65), C(67) -> G(71), G(71) -> C(67), N(78) -> N(78)
+    // For lowercase: a(97) -> t(116), t(116) -> a(97), c(99) -> g(103), g(103) -> c(99), n(110) -> n(110)
+    let mut complement_table = [0u8; 256];
+    complement_table[b'A' as usize] = b'T';
+    complement_table[b'T' as usize] = b'A';
+    complement_table[b'C' as usize] = b'G';
+    complement_table[b'G' as usize] = b'C';
+    complement_table[b'N' as usize] = b'N';
+    complement_table[b'a' as usize] = b't';
+    complement_table[b't' as usize] = b'a';
+    complement_table[b'c' as usize] = b'g';
+    complement_table[b'g' as usize] = b'c';
+    complement_table[b'n' as usize] = b'n';
+    // For other characters, map to themselves (identity)
+    for i in 0..256 {
+        if complement_table[i] == 0 {
+            complement_table[i] = i as u8;
+        }
+    }
+    
+    // Process 16 bytes at a time using SSSE3
+    const CHUNK_SIZE: usize = 16;
+    let chunks = len / CHUNK_SIZE;
+    let remainder = len % CHUNK_SIZE;
+    
+    // Reverse shuffle mask for 16 bytes (reverses byte order: [15, 14, 13, ..., 0])
+    let reverse_mask = _mm_set_epi8(
+        15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0
+    );
+    
+    // Process chunks in reverse order (from end to beginning)
+    for i in 0..chunks {
+        let chunk_idx = chunks - 1 - i;
+        let chunk_ptr = unsafe { bytes.as_ptr().add(chunk_idx * CHUNK_SIZE) };
+        
+        // Load 16 bytes
+        let chunk = unsafe { _mm_loadu_si128(chunk_ptr as *const __m128i) };
+        
+        // Reverse bytes within the chunk using pshufb
+        let reversed = _mm_shuffle_epi8(chunk, reverse_mask);
+        
+        // Store reversed bytes to temporary array
+        let mut temp = [0u8; 16];
+        unsafe {
+            _mm_storeu_si128(temp.as_mut_ptr() as *mut __m128i, reversed);
+        }
+        
+        // Apply complement mapping using lookup table
+        for j in 0..16 {
+            temp[j] = complement_table[temp[j] as usize];
+        }
+        
+        result.extend_from_slice(&temp);
+    }
+    
+    // Handle remainder using scalar code (process from end of sequence)
+    if remainder > 0 {
+        for i in (0..remainder).rev() {
+            let idx = chunks * CHUNK_SIZE + i;
+            result.push(complement_table[bytes[idx] as usize]);
+        }
+    }
+    
+    unsafe { String::from_utf8_unchecked(result) }
 }
 
