@@ -2,6 +2,19 @@
 name = "chloro-index"
 version = "0.1.0"
 edition = "2024"
+default-run = "chloro-index"
+
+[lib]
+name = "chloro_index"
+path = "src/lib.rs"
+
+[[bin]]
+name = "chloro-index"
+path = "src/main.rs"
+
+[[bin]]
+name = "demo_v1_simd"
+path = "src/bin/demo_v1_simd.rs"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
