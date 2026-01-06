@@ -35,7 +35,13 @@ pub fn get_canonical(kmer: u64, k: u8) -> u64 {
     let revcomp_str = reverse_complement(&kmer_str);
     
     // Encode the reverse complement
-    let revcomp = encode_dna(&revcomp_str).unwrap_or(u64::MAX);
+    // If encoding fails (shouldn't happen for valid k-mer), use the original k-mer
+    // This is safe because we're comparing with the original, so worst case we return the original
+    let revcomp = encode_dna(&revcomp_str).unwrap_or_else(|_| {
+        // This should never happen if the k-mer was valid, but if it does,
+        // we return the original k-mer as the canonical form
+        kmer
+    });
     
     // Return the smaller value
     kmer.min(revcomp)

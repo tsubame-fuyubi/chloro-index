@@ -111,7 +111,7 @@ fn handle_import(tree: &mut BTree, parts: &[&str]) {
 /// # Returns
 /// Total number of k-mers indexed, or an error if parsing fails
 fn import_fasta<R: BufRead>(tree: &mut BTree, reader: R) -> io::Result<usize> {
-    let mut current_chr: Option<u8> = None;
+    let mut current_chr: Option<u32> = None;
     let mut sequence_buffer = String::new();
     let mut total_count = 0;
 
@@ -166,9 +166,9 @@ fn import_fasta<R: BufRead>(tree: &mut BTree, reader: R) -> io::Result<usize> {
 ///
 /// # Returns
 /// Chromosome ID if numeric characters are found, None otherwise
-fn parse_chromosome_id(header: &str) -> Option<u8> {
+fn parse_chromosome_id(header: &str) -> Option<u32> {
     let id_str: String = header.chars().filter(|c| c.is_ascii_digit()).collect();
-    id_str.parse::<u8>().ok()
+    id_str.parse::<u32>().ok()
 }
 
 /// Handles the find command for exact sequence lookup.
