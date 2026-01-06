@@ -24,8 +24,8 @@ pub mod minimizer;
 /// Positions are 1-based (following biological convention).
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct GenomicLocation {
-    /// Chromosome identifier (typically 1-24 for human genome)
-    pub chromosome: u8,
+    /// Chromosome/contig/scaffold identifier (supports up to 4.2 billion sequences)
+    pub chromosome: u32,
     /// 1-based position on the chromosome
     pub position: u32,
 }
@@ -128,12 +128,12 @@ impl BTree {
     /// with their genomic positions.
     ///
     /// # Arguments
-    /// * `chr` - Chromosome identifier
+    /// * `chr` - Chromosome/contig/scaffold identifier
     /// * `seq` - DNA sequence string (must contain only A, C, G, T)
     ///
     /// # Returns
     /// Number of k-mers successfully indexed
-    pub fn bulk_insert_sequence(&mut self, chr: u8, seq: &str) -> usize {
+    pub fn bulk_insert_sequence(&mut self, chr: u32, seq: &str) -> usize {
         const K_MER_SIZE: usize = 32;
         
         if seq.len() < K_MER_SIZE {
@@ -331,8 +331,13 @@ impl BTree {
         }
 
         // Promote middle key to parent
-        let mid_key = full_child.keys.pop().unwrap();
-        let mid_value = full_child.values.pop().unwrap();
+        // SAFETY: We know the child is full (has 2t-1 keys), so these pops will succeed.
+        // However, we use expect with a clear message for better error reporting if the
+        // B-Tree invariants are violated.
+        let mid_key = full_child.keys.pop()
+            .expect("B-Tree invariant violated: full child node has no keys to promote");
+        let mid_value = full_child.values.pop()
+            .expect("B-Tree invariant violated: full child node has no values to promote");
 
         parent.keys.insert(i, mid_key);
         parent.values.insert(i, mid_value);
